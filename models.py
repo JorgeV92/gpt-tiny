@@ -1,4 +1,4 @@
-from tinygrad import Tensor, nn
+from tinygrad import Tensor, nn, dtypes
 from dataclasses import dataclass
 
 @dataclass
@@ -13,7 +13,7 @@ class ModelArgs:
 
     def __post_init__(self):
         if self.n_local_heads == -1:
-            self.n_local_heads == self.n_head
+            self.n_local_heads = self.n_head
         self.head_dim = self.dim // self.n_head
 
 def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
@@ -37,9 +37,16 @@ def apply_rotary_emb(q: Tensor, k: Tensor, freqa_cis: Tensor):
     k_rotated = Tensor.stack(k0*cos-k1*sin, k1*cos+k0*sin,dim=-1)
     return (q_rotated.flatten(3), k_rotated.flatten(3),)
 
+def precompute_freqs_cis(head_dim: int, end: int, theta:float = 10000.0) -> Tensor:
+    freqs = 1.0 / (theta**(Tensor.arange(0,head_dim,2,dtype=dtypes.float32) / head_dim))
+    positions = Tensor.arange(end, dtype=dtypes.float32).reshape(end,1)
+    angles = positions * freqs.reshape(1,-1)
+    return Tensor.stack(angles.cos(), angles.sin(), dim=-1).reshape(1,end,1,head_dim//2,2)
+
 class Attention:
     def __init__(self, config):
         assert config.dim % config.n_head == 0
+        self.dim = config.dim
         self.n_head = config.n_head
         self.n_local_heads = config.n_local_heads 
         self.head_dim = config.head_dim 
@@ -53,7 +60,7 @@ class Attention:
         bsz, seqlen, _ = x.shape 
         xqkv = self.wqkv(x)
         kv_size = (self.n_local_heads * self.head_dim)
-        q, k, v = ... 
+        q, k, v = xqkv.split([self.dim, kv_size, kv_size], dim=-1) 
         q = q.reshape(bsz, seqlen, self.n_head, self.head_dim) 
         k = k.reshape(bsz, seqlen, self.n_local_heads, self.head_dim)
         v = v.reshape(bsz, seqlen, self.n_local_heads, self.head_dim)
@@ -71,10 +78,20 @@ class Attention:
 
         
 
-def test_attention():
-    pass 
+def test_attention_shape():
+    config = ModelArgs(dim=64,n_head=4,n_local_heads=2)
+    attention = Attention(config)
+    batch = 2
+    seqlen = 5
+    x = Tensor.randn(batch, seqlen, config.dim)
+    freqs_cis = precompute_freqs_cis(config.head_dim, seqlen)
+    out = attention(x,start_pos=0,freqs_cis=freqs_cis)
+    print("input: ", x.shape)
+    print("output: ", out.shape)
+    assert out.shape == (batch, seqlen, config.dim)
+
 
 
 if __name__ == '__main__':
-    pass
+    test_attention_shape()
 
