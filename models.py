@@ -43,6 +43,20 @@ def precompute_freqs_cis(head_dim: int, end: int, theta:float = 10000.0) -> Tens
     angles = positions * freqs.reshape(1,-1)
     return Tensor.stack(angles.cos(), angles.sin(), dim=-1).reshape(1,end,1,head_dim//2,2)
 
+class KVCache:
+    def __init__(self, max_batch_size: int, max_seq_length: int, n_kv_heads: int, head_dim: int, dtype=dtypes.float32):
+        self.k_cache = Tensor.zeros(max_batch_size, max_seq_length, n_kv_heads, head_dim, dtype=dtype).contiguous().realize()
+        self.v_cache = Tensor.zeros(max_batch_size, max_seq_length, n_kv_heads, head_dim, dtype=dtype).contiguous().realize()
+
+    def update(self, start_pos: int, k: Tensor, v: Tensor): 
+        bsz, seqlen, _, _ = k.shape 
+        end_pos = start_pos + seqlen 
+        self.k_cache[:bsz, start_pos:end_pos,:,:].assign(k).realize()
+        self.v_cache[:bsz, start_pos:end_pos, :, :].assign(v).realize()
+        keys = self.k_cache[:bsz, :end_pos, :,:]
+        values = self.v_cache[:bsz,:end_pos,:,:]
+        return keys, values 
+        
 class Attention:
     def __init__(self, config):
         assert config.dim % config.n_head == 0
@@ -74,9 +88,7 @@ class Attention:
         y = q.scaled_dot_product_attention(k,v,mask)
         y = y.transpose(1,2)
         y = y.reshape(bsz, seqlen, self.dim)
-        return self.wo(y)
-
-        
+        return self.wo(y)       
 
 def test_attention_shape():
     config = ModelArgs(dim=64,n_head=4,n_local_heads=2)
@@ -97,8 +109,47 @@ def test_repeat_kv():
     print("after :", res.shape)
     assert res.shape == (1,2,4,4)
 
+def test_rope_preserves_norm():
+    q = Tensor.randn(1,4,4,16,)
+    k = Tensor.randn(1,4,2,16,)
+    freqs = precompute_freqs_cis(head_dim=16,end=4)
+    q_rot, k_rot = apply_rotary_emb(q, k,freqs)
+    before = (q*q).sum(axis=-1)
+    after = (q_rot*q_rot).sum(axis=-1)
+    assert before.allclose(after, rtol=1e-4,atol=1e-4).item()
+
+def test_kv_cache():
+    batch = 1
+    max_seq_len = 8 
+    n_kv_heads = 2
+    head_dim = 4 
+    cache = KVCache(max_batch_size=batch, max_seq_length=max_seq_len, n_kv_heads=n_kv_heads, head_dim=head_dim, dtype=dtypes.float32)
+    k1 = Tensor.arange(batch*3*n_kv_heads*head_dim, dtype=dtypes.float32,).reshape(batch,3,n_kv_heads,head_dim)
+    v1 = k1 + 100 
+    keys, values = cache.update(start_pos=0,k=k1,v=v1)
+    print("after prefill:")
+    print("keys shape: ", keys.shape)
+    print("values shape: ", values.shape)
+    assert keys.shape == (batch, 3, n_kv_heads, head_dim, )
+    assert values.shape == (batch, 3, n_kv_heads, head_dim)
+    assert keys.allclose(k1).item()
+    assert values.allclose(v1).item()
+    k2 = Tensor.full((batch, 1, n_kv_heads, head_dim), 999.0)
+    v2 = Tensor.full((batch,1,n_kv_heads,head_dim), 1999.0)
+    keys, values = cache.update(start_pos=3, k=k2, v=v2)
+    print("after decode:")
+    print("keys shape   :", keys.shape)
+    print("values shape :", values.shape)
+    assert keys.shape == (batch, 4, n_kv_heads, head_dim)
+    assert values.shape == (batch, 4, n_kv_heads, head_dim)
+    assert keys[:, :3].allclose(k1).item()
+    assert values[:,:3].allclose(v1).item()
+    assert keys[:, 3:4].allclose(k2).item()
+    assert values[:, 3:4].allclose(v2).item()
+    print("KVCache test passed")
 
 if __name__ == '__main__':
     test_attention_shape()
     test_repeat_kv()
-
+    test_rope_preserves_norm()
+    test_kv_cache()
