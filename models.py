@@ -1,6 +1,11 @@
 from tinygrad import Tensor, nn, dtypes
 from dataclasses import dataclass
 
+def find_mult(n: int, k: int) -> int:
+    if n % k == 0: 
+        return n
+    return n + k - (n % k)
+
 @dataclass
 class ModelArgs:
     block_size: int = 2048 
@@ -10,11 +15,16 @@ class ModelArgs:
     dim: int = 4096 
     n_local_heads: int = -1
     head_dim: int = 0
+    intermediate_size: int | None = None 
 
     def __post_init__(self):
         if self.n_local_heads == -1:
             self.n_local_heads = self.n_head
         self.head_dim = self.dim // self.n_head
+        if self.intermediate_size is None:
+            hidden_dim = 4 * self.dim 
+            n_hidden = int(2 * hidden_dim / 3)
+            self.intermediate_size = find_mult(n_hidden, 256)
 
 def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
     bsz, seqlen, n_kv_heads, head_dim = x.shape
@@ -88,7 +98,16 @@ class Attention:
         y = q.scaled_dot_product_attention(k,v,mask)
         y = y.transpose(1,2)
         y = y.reshape(bsz, seqlen, self.dim)
-        return self.wo(y)       
+        return self.wo(y)      
+
+class FeedForward: 
+    def __init__(self, config):
+        self.w1 = nn.Linear(config.dim, config.intermediate_size, bias=False)
+        self.w3 = nn.Linear(config.dim, config.intermediate_size, bias=False)
+        self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=False)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return self.w2(self.w1(x).silu() * self.w3(x))
 
 def test_attention_shape():
     config = ModelArgs(dim=64,n_head=4,n_local_heads=2)
@@ -148,8 +167,19 @@ def test_kv_cache():
     assert values[:, 3:4].allclose(v2).item()
     print("KVCache test passed")
 
+def test_feed_forward_shape():
+    config = ModelArgs(dim=64, n_head=4, n_local_heads=2)
+    ff = FeedForward(config)
+    x = Tensor.randn(2,5,64,)
+    out = ff(x)
+    print("input: ", x.shape)
+    print("output: ", out.shape)
+    assert out.shape == x.shape
+    print("FeedForward test passed")
+
 if __name__ == '__main__':
     test_attention_shape()
     test_repeat_kv()
     test_rope_preserves_norm()
     test_kv_cache()
+    test_feed_forward_shape()
