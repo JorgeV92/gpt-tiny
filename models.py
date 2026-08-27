@@ -15,7 +15,8 @@ class ModelArgs:
     dim: int = 4096 
     n_local_heads: int = -1
     head_dim: int = 0
-    intermediate_size: int | None = None 
+    intermediate_size: int | None = None
+    norm_eps: float = 1e-5 
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -109,6 +110,18 @@ class FeedForward:
     def __call__(self, x: Tensor) -> Tensor:
         return self.w2(self.w1(x).silu() * self.w3(x))
 
+class TransformerBlock:
+    def __init__(self, config):
+        self.attention = Attention(config)
+        self.feed_forward = FeedForward(config)
+        self.attention_norm = nn.RMSNorm(config.dim, config.norm_eps,)
+        self.ff_norm = nn.RMSNorm(config.dim, config.norm_eps,)
+
+    def __call__(self, x: Tensor, start_pos: int, freqs_cis: Tensor, mask: Tensor | None=None):
+        h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
+        out = h + self.feed_forward(self.ff_norm(h))
+        return out
+
 def test_attention_shape():
     config = ModelArgs(dim=64,n_head=4,n_local_heads=2)
     attention = Attention(config)
@@ -175,7 +188,21 @@ def test_feed_forward_shape():
     print("input: ", x.shape)
     print("output: ", out.shape)
     assert out.shape == x.shape
-    print("FeedForward test passed")
+    print("FeedForward test passed") 
+
+def test_transformer_block_shape():
+    config = ModelArgs(dim=64, n_head=4, n_local_heads=2)
+    block = TransformerBlock(config)
+    batch = 2
+    seqlen = 5 
+    x = Tensor.randn(batch, seqlen, config.dim)
+    freqs_cis = precompute_freqs_cis(config.head_dim, seqlen)
+    out = block(x,start_pos=0,freqs_cis=freqs_cis)
+    print("input: ", x.shape)
+    print("output: ", out.shape)
+    assert out.shape == x.shape 
+    print("TransformerBLock test passed")
+
 
 if __name__ == '__main__':
     test_attention_shape()
@@ -183,3 +210,4 @@ if __name__ == '__main__':
     test_rope_preserves_norm()
     test_kv_cache()
     test_feed_forward_shape()
+    test_transformer_block_shape()
