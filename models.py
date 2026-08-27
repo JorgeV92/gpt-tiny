@@ -90,8 +90,15 @@ def test_attention_shape():
     print("output: ", out.shape)
     assert out.shape == (batch, seqlen, config.dim)
 
+def test_repeat_kv():
+    x = Tensor.arange(1*2*2*4).reshape(1,2,2,4)
+    res = repeat_kv(x, 2)
+    print("before :", x.shape)
+    print("after :", res.shape)
+    assert res.shape == (1,2,4,4)
 
 
 if __name__ == '__main__':
     test_attention_shape()
+    test_repeat_kv()
 
