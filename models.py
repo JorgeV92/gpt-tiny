@@ -8,10 +8,37 @@ class ModelArgs:
     n_layer: int = 32
     n_head: int = 32 
     dim: int = 4096 
+    n_local_heads: int = -1
+    head_dim: int = 0
 
+    def __post_init__(self):
+        if self.n_local_heads == -1:
+            self.n_local_heads == self.n_head
+        self.head_dim = self.dim // self.n_head
+
+def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
+    bsz, seqlen, n_kv_heads, head_dim = x.shape
+    if n_rep == 1:
+        return x 
+    return (
+        x.repeat((1,1,1,n_rep)).reshape(bsz, seqlen, n_kv_heads*n_rep,head_dim)
+    )
+
+def apply_rotary_emb(q: Tensor, k: Tensor, freqa_cis: Tensor):
+    q = q.reshape(*q.shape[:-1], q.shape[-1] // 2, 2)
+    k = k.reshape(*k.shape[:-1], k.shape[-1] //2, 2)
+    q0 = q[..., 0]
+    q1 = q[..., 1]
+    k0 = k[..., 0]
+    k1 = k[..., 1]
+    cos = freqa_cis[..., 0]
+    sin = freqa_cis[..., 1]
+    q_rotated = Tensor.stack(q0*cos-q1*sin, q1*cos+q0*sin,dim=-1)
+    k_rotated = Tensor.stack(k0*cos-k1*sin, k1*cos+k0*sin,dim=-1)
+    return (q_rotated.flatten(3), k_rotated.flatten(3),)
 
 class Attention:
-    def __inti__(self, config):
+    def __init__(self, config):
         assert config.dim % config.n_head == 0
         self.n_head = config.n_head
         self.n_local_heads = config.n_local_heads 
