@@ -30,9 +30,24 @@ class Attention:
         q = q.reshape(bsz, seqlen, self.n_head, self.head_dim) 
         k = k.reshape(bsz, seqlen, self.n_local_heads, self.head_dim)
         v = v.reshape(bsz, seqlen, self.n_local_heads, self.head_dim)
+        q, k = apply_rotary_emb(q, k, freqs_cis)
+        if self.kv_cache is not None: k, v = self.kv_cache.update(start_pos, k, v)
+        k = repeat_kv(k, self.n_rep)
+        v = repeat_kv(v, self.n_rep)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        y = q.scaled_dot_product_attention(k,v,mask)
+        y = y.transpose(1,2)
+        y = y.reshape(bsz, seqlen, self.dim)
+        return self.wo(y)
 
-
+        
 
 def test_attention():
     pass 
+
+
+if __name__ == '__main__':
+    pass
 
