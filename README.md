@@ -1,3 +1,3 @@
 # gpt-tiny 
 
-A fast llm inference model built with `tinygrad`
+A fast gpt inference model built with `tinygrad`
