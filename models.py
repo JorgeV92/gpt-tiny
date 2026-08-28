@@ -17,6 +17,7 @@ class ModelArgs:
     head_dim: int = 0
     intermediate_size: int | None = None
     norm_eps: float = 1e-5 
+    rope_base: float = 10000.0
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -122,6 +123,26 @@ class TransformerBlock:
         out = h + self.feed_forward(self.ff_norm(h))
         return out
 
+class Transformer:
+    def __init__(self, config: ModelArgs):
+        self.config = config
+        self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
+        self.layers = [TransformerBlock(config) for _ in range(config.n_layer)]
+        self.norm = nn.RMSNorm(config.dim, config.norm_eps)
+        self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
+        self.freqs_cis = precompute_freqs_cis(config.head_dim, config.block_size, config.rope_base).contiguous()
+
+    def __call__(self, tokens: Tensor, start_pos: int=0) -> Tensor:
+        bsz, seqlen = tokens.shape
+        x = self.tok_embeddings(tokens)
+        freqs_cis = self.freqs_cis[:,start_pos:start_pos+seqlen,:,:]
+        if seqlen > 1: mask = Tensor.full((1,1,seqlen,start_pos+seqlen), float("-inf"), dtype=x.dtype, device=x.device,).triu(start_pos+1)
+        else: mask = None 
+        for layer in self.layers: x = layer(x, start_pos,freqs_cis, mask)
+        x = self.norm(x)
+        logits = self.output(x)
+        return logits
+
 def test_attention_shape():
     config = ModelArgs(dim=64,n_head=4,n_local_heads=2)
     attention = Attention(config)
@@ -203,11 +224,29 @@ def test_transformer_block_shape():
     assert out.shape == x.shape 
     print("TransformerBLock test passed")
 
+def test_transformer_shape():
+    config = ModelArgs(block_size=32,vocab_size=128,n_layer=2,n_head=4,n_local_heads=2,dim=64)
+    model = Transformer(config)
+    tokens = Tensor([
+        [1,5,20,17,9],
+        [4,2,11,8,6]
+    ])
+    logits = model(tokens, start_pos=0)
+    print("tokens shape: ", tokens.shape)
+    print("logits shape: ", logits.shape)
+    assert tokens.shape == (2, 5)
+    assert logits.shape == (2,5,config.vocab_size)
+    print("Transformer test passed")
 
-if __name__ == '__main__':
+
+def run_tests():
     test_attention_shape()
     test_repeat_kv()
     test_rope_preserves_norm()
     test_kv_cache()
     test_feed_forward_shape()
-    test_transformer_block_shape()
+    test_transformer_block_shape() 
+    test_transformer_shape()
+
+if __name__ == '__main__':
+    run_tests()
