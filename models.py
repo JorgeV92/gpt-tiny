@@ -82,7 +82,7 @@ class Attention:
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None 
 
-    def __call__(self, x, start_pos, freqs_cis, mask=None):
+    def forward(self, x, start_pos, freqs_cis, mask=None):
         bsz, seqlen, _ = x.shape 
         xqkv = self.wqkv(x)
         kv_size = (self.n_local_heads * self.head_dim)
@@ -108,7 +108,7 @@ class FeedForward:
         self.w3 = nn.Linear(config.dim, config.intermediate_size, bias=False)
         self.w2 = nn.Linear(config.intermediate_size, config.dim, bias=False)
 
-    def __call__(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         return self.w2(self.w1(x).silu() * self.w3(x))
 
 class TransformerBlock:
@@ -118,9 +118,9 @@ class TransformerBlock:
         self.attention_norm = nn.RMSNorm(config.dim, config.norm_eps,)
         self.ff_norm = nn.RMSNorm(config.dim, config.norm_eps,)
 
-    def __call__(self, x: Tensor, start_pos: int, freqs_cis: Tensor, mask: Tensor | None=None):
-        h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
-        out = h + self.feed_forward(self.ff_norm(h))
+    def forward(self, x: Tensor, start_pos: int, freqs_cis: Tensor, mask: Tensor | None=None):
+        h = x + self.attention.forward(self.attention_norm(x), start_pos, freqs_cis, mask)
+        out = h + self.feed_forward.forward(self.ff_norm(h))
         return out
 
 class Transformer:
@@ -131,14 +131,44 @@ class Transformer:
         self.norm = nn.RMSNorm(config.dim, config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
         self.freqs_cis = precompute_freqs_cis(config.head_dim, config.block_size, config.rope_base).contiguous()
+        self.max_batch_size = 0
+        self.max_seq_length = 0 
 
-    def __call__(self, tokens: Tensor, start_pos: int=0) -> Tensor:
+    def setup_caches(self, max_batch_size: int, max_seq_length: int):
+        assert max_seq_length <= self.config.block_size
+        self.max_batch_size = max_batch_size
+        self.max_seq_length = max_seq_length
+        dtype = self.output.weight.dtype 
+        for layer in self.layers:
+            layer.attention.kv_cache = KVCache(max_batch_size=max_batch_size, max_seq_length=max_seq_length, n_kv_heads=self.config.n_local_heads, head_dim=self.config.head_dim, dtype=dtype)
+            
+
+    def forward(self, tokens: Tensor, start_pos: int=0) -> Tensor:
         bsz, seqlen = tokens.shape
         x = self.tok_embeddings(tokens)
         freqs_cis = self.freqs_cis[:,start_pos:start_pos+seqlen,:,:]
         if seqlen > 1: mask = Tensor.full((1,1,seqlen,start_pos+seqlen), float("-inf"), dtype=x.dtype, device=x.device,).triu(start_pos+1)
         else: mask = None 
-        for layer in self.layers: x = layer(x, start_pos,freqs_cis, mask)
+        for layer in self.layers: x = layer.forward(x, start_pos,freqs_cis, mask)
         x = self.norm(x)
         logits = self.output(x)
         return logits
+
+def prefill(model: Transformer, tokens: Tensor) -> Tensor:
+    logits = model(tokens, start_pos=0)
+    return logits[:,-1,:]
+
+def generate(model: Transformer, prompt: Tensor, max_new_tokens: int) -> Tensor:
+    bsz, prompt_len = prompt.shape 
+    assert (prompt_len + max_new_tokens <= model.config.block_size)
+    model.setup_caches(max_batch_size=bsz, max_seq_length=prompt_len+max_new_tokens)
+    logits = model(prompt, start_pos=0).realize()
+    next_token = (logits[:,-1,:].argmax(axis=-1).reshape(bsz,1))
+    generated = [next_token]
+    start_pos = prompt_len
+    for _ in range(max_new_tokens-1):
+        logits = model(next_token, start_pos=start_pos).realize()
+        next_token = (logits[:,-1,:].argmax(axis=-1).reshape(bsz,1))
+        generated.append(next_token)
+        start_pos += 1
+    return prompt.cat(*generated, dim=1)

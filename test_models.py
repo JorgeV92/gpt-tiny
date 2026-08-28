@@ -10,6 +10,7 @@ from models import (
     apply_rotary_emb,
     precompute_freqs_cis,
     repeat_kv,
+    generate,
 )
 
 
@@ -20,7 +21,7 @@ def test_attention_shape():
     seqlen = 5
     x = Tensor.randn(batch, seqlen, config.dim)
     freqs_cis = precompute_freqs_cis(config.head_dim, seqlen)
-    out = attention(x, start_pos=0, freqs_cis=freqs_cis)
+    out = attention.forward(x, start_pos=0, freqs_cis=freqs_cis)
     print("input: ", x.shape)
     print("output: ", out.shape)
     assert out.shape == (batch, seqlen, config.dim)
@@ -87,7 +88,7 @@ def test_feed_forward_shape():
     config = ModelArgs(dim=64, n_head=4, n_local_heads=2)
     ff = FeedForward(config)
     x = Tensor.randn(2, 5, 64)
-    out = ff(x)
+    out = ff.forward(x)
     print("input: ", x.shape)
     print("output: ", out.shape)
     assert out.shape == x.shape
@@ -101,7 +102,7 @@ def test_transformer_block_shape():
     seqlen = 5
     x = Tensor.randn(batch, seqlen, config.dim)
     freqs_cis = precompute_freqs_cis(config.head_dim, seqlen)
-    out = block(x, start_pos=0, freqs_cis=freqs_cis)
+    out = block.forward(x, start_pos=0, freqs_cis=freqs_cis)
     print("input: ", x.shape)
     print("output: ", out.shape)
     assert out.shape == x.shape
@@ -119,12 +120,24 @@ def test_transformer_shape():
     )
     model = Transformer(config)
     tokens = Tensor([[1, 5, 20, 17, 9], [4, 2, 11, 8, 6]])
-    logits = model(tokens, start_pos=0)
+    logits = model.forward(tokens, start_pos=0)
     print("tokens shape: ", tokens.shape)
     print("logits shape: ", logits.shape)
     assert tokens.shape == (2, 5)
     assert logits.shape == (2, 5, config.vocab_size)
     print("Transformer test passed")
+
+
+def test_generation():
+    config = ModelArgs(block_size=32, vocab_size=128,n_layer=2,n_head=4,n_local_heads=2,dim=64)
+    model = Transformer(config)
+    prompt = Tensor([[1,5,20,17,9]])
+    result = generate(model,prompt,max_new_tokens=5)
+    print("prompt shape: ", prompt.shape)
+    print("result shape: ", result.shape)
+    print(result.numpy())
+    assert result.shape == (1,10)
+    print("Generation test passed")
 
 
 def run_tests():
