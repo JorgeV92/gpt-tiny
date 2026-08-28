@@ -1,1 +1,31 @@
 note.md
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local Python environments
+.venv/
+venv/
+env/
+.env
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Large model weights and generated comparison data
+checkpoints/
+*.pth
+*.pt
+*.safetensors
+pytorch_logits.npy
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/

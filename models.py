@@ -1,4 +1,5 @@
 from tinygrad import Tensor, nn, dtypes
+from tinygrad.nn.state import torch_load, load_state_dict
 from dataclasses import dataclass
 
 def find_mult(n: int, k: int) -> int:
@@ -27,6 +28,10 @@ class ModelArgs:
             hidden_dim = 4 * self.dim 
             n_hidden = int(2 * hidden_dim / 3)
             self.intermediate_size = find_mult(n_hidden, 256)
+
+    @classmethod
+    def from_name(cls, name:str):
+        return cls(**transformer_configs[name])
 
 def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
     bsz, seqlen, n_kv_heads, head_dim = x.shape
@@ -116,11 +121,11 @@ class TransformerBlock:
         self.attention = Attention(config)
         self.feed_forward = FeedForward(config)
         self.attention_norm = nn.RMSNorm(config.dim, config.norm_eps,)
-        self.ff_norm = nn.RMSNorm(config.dim, config.norm_eps,)
+        self.ffn_norm = nn.RMSNorm(config.dim, config.norm_eps,)
 
     def forward(self, x: Tensor, start_pos: int, freqs_cis: Tensor, mask: Tensor | None=None):
         h = x + self.attention.forward(self.attention_norm(x), start_pos, freqs_cis, mask)
-        out = h + self.feed_forward.forward(self.ff_norm(h))
+        out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
 
 class Transformer:
@@ -152,7 +157,14 @@ class Transformer:
         for layer in self.layers: x = layer.forward(x, start_pos,freqs_cis, mask)
         x = self.norm(x)
         logits = self.output(x)
-        return logits
+        return logits 
+
+    def __call__(self, tokens: Tensor, start_pos: int=0) -> Tensor:
+        return self.forward(tokens, start_pos)
+
+    @classmethod
+    def from_name(cls, name:str):
+        return cls(ModelArgs.from_name(name))
 
 def prefill(model: Transformer, tokens: Tensor) -> Tensor:
     logits = model(tokens, start_pos=0)
@@ -172,3 +184,13 @@ def generate(model: Transformer, prompt: Tensor, max_new_tokens: int) -> Tensor:
         generated.append(next_token)
         start_pos += 1
     return prompt.cat(*generated, dim=1)
+
+def load_weights(model:Transformer, checkpoint_path:str):
+    print(f"loading checkpoint: {checkpoint_path}")
+    weights = torch_load(checkpoint_path)
+    load_state_dict(model, weights, strict=True)
+    print("weights loaded")
+
+transformer_configs = {
+    "llama-3-8b": dict(block_size=8192, vocab_size=128256, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, rope_base=500000)
+}
